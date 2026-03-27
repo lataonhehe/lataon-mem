@@ -1,10 +1,23 @@
 import logging
-import asyncpg
 from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters
 from config.settings import TELEGRAM_TOKEN
 from db.database import get_pool, init_db
 from bot.handlers import handle_message
-from bot.commands import cmd_help, cmd_list, cmd_search
+from bot.commands import (
+    cmd_help,
+    cmd_list,
+    cmd_today,
+    cmd_cat,
+    cmd_search,
+    cmd_delete,
+    cmd_edit,
+    cmd_deep,
+    cmd_review,
+    cmd_quiz,
+    cmd_stats,
+    cmd_summary,
+    cmd_export,
+)
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -23,7 +36,6 @@ async def on_shutdown(app):
     pool = app.bot_data.get("pool")
     if pool:
         await pool.close()
-        logging.info("Database pool đã đóng.")
 
 
 def main():
@@ -35,10 +47,20 @@ def main():
         .build()
     )
 
-    app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("start", cmd_help))
+    app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("list", cmd_list))
+    app.add_handler(CommandHandler("today", cmd_today))
+    app.add_handler(CommandHandler("cat", cmd_cat))
     app.add_handler(CommandHandler("search", cmd_search))
+    app.add_handler(CommandHandler("delete", cmd_delete))
+    app.add_handler(CommandHandler("edit", cmd_edit))
+    app.add_handler(CommandHandler("deep", cmd_deep))
+    app.add_handler(CommandHandler("review", cmd_review))
+    app.add_handler(CommandHandler("quiz", cmd_quiz))
+    app.add_handler(CommandHandler("stats", cmd_stats))
+    app.add_handler(CommandHandler("summary", cmd_summary))
+    app.add_handler(CommandHandler("export", cmd_export))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logging.info("Bot đang chạy...")

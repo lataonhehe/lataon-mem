@@ -1,11 +1,13 @@
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Optional, Any
 from enum import Enum
 
 
 class UserMode(Enum):
     IDLE = "idle"
-    AWAITING_REPLY = "awaiting_reply"  # vừa hỏi Socratic, chờ trả lời
+    AWAITING_REPLY = "awaiting_reply"
+    DEEP_DIVE = "deep_dive"
+    QUIZ = "quiz"
 
 
 @dataclass
@@ -14,6 +16,12 @@ class UserState:
     last_note_id: Optional[int] = None
     last_note_content: Optional[str] = None
     last_category: Optional[str] = None
+    # deep dive
+    deep_topic: Optional[str] = None
+    deep_history: list = field(default_factory=list)
+    deep_turns: int = 0
+    # quiz
+    quiz_note: Optional[Any] = None
 
 
 _states: dict[int, UserState] = {}
