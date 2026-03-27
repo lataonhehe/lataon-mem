@@ -1,54 +1,54 @@
-import aiosqlite
 import json
-from typing import Optional
+import asyncpg
 from db.models import Note
-from config.settings import DB_PATH
 
 
-async def save_note(note: Note) -> int:
-    async with aiosqlite.connect(DB_PATH) as db:
-        tags_str = json.dumps(note.tags, ensure_ascii=False)
-        cursor = await db.execute(
+async def save_note(pool: asyncpg.Pool, note: Note) -> int:
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
             """INSERT INTO notes (user_id, content, category, tags, summary)
-               VALUES (?, ?, ?, ?, ?)""",
-            (note.user_id, note.content, note.category, tags_str, note.summary),
+               VALUES ($1, $2, $3, $4::jsonb, $5)
+               RETURNING id""",
+            note.user_id,
+            note.content,
+            note.category,
+            json.dumps(note.tags, ensure_ascii=False),
+            note.summary,
         )
-        await db.commit()
-        return cursor.lastrowid
+        return row["id"]
 
 
-async def get_recent_notes(user_id: int, limit: int = 5) -> list[Note]:
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            """SELECT * FROM notes WHERE user_id = ?
-               ORDER BY created_at DESC LIMIT ?""",
-            (user_id, limit),
-        ) as cursor:
-            rows = await cursor.fetchall()
+async def get_recent_notes(
+    pool: asyncpg.Pool, user_id: int, limit: int = 5
+) -> list[Note]:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT * FROM notes WHERE user_id = $1
+               ORDER BY created_at DESC LIMIT $2""",
+            user_id,
+            limit,
+        )
     return [_row_to_note(r) for r in rows]
 
 
-async def search_notes(user_id: int, keyword: str, limit: int = 5) -> list[Note]:
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        pattern = f"%{keyword}%"
-        async with db.execute(
+async def search_notes(
+    pool: asyncpg.Pool, user_id: int, keyword: str, limit: int = 5
+) -> list[Note]:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
             """SELECT * FROM notes
-               WHERE user_id = ?
-                 AND (content LIKE ? OR tags LIKE ? OR category LIKE ? OR summary LIKE ?)
-               ORDER BY created_at DESC LIMIT ?""",
-            (user_id, pattern, pattern, pattern, pattern, limit),
-        ) as cursor:
-            rows = await cursor.fetchall()
+               WHERE user_id = $1
+                 AND (content ILIKE $2 OR summary ILIKE $2 OR category ILIKE $2)
+               ORDER BY created_at DESC LIMIT $3""",
+            user_id,
+            f"%{keyword}%",
+            limit,
+        )
     return [_row_to_note(r) for r in rows]
 
 
 def _row_to_note(row) -> Note:
-    import json as _json
-    from datetime import datetime
-
-    tags = _json.loads(row["tags"]) if row["tags"] else []
+    tags = row["tags"] if isinstance(row["tags"], list) else json.loads(row["tags"])
     return Note(
         id=row["id"],
         user_id=row["user_id"],

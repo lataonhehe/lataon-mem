@@ -17,7 +17,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    notes = await get_recent_notes(user_id, limit=5)
+    pool = context.bot_data["pool"]
+    notes = await get_recent_notes(pool, user_id, limit=5)
     if not notes:
         await update.message.reply_text("Chưa có ghi chú nào. Hãy nhắn điều gì đó!")
         return
@@ -32,12 +33,13 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    pool = context.bot_data["pool"]
     keyword = " ".join(context.args)
     if not keyword:
         await update.message.reply_text("Dùng: /search [từ khóa]")
         return
 
-    notes = await search_notes(user_id, keyword)
+    notes = await search_notes(pool, user_id, keyword)
     if not notes:
         await update.message.reply_text(f"Không tìm thấy ghi chú nào về '{keyword}'.")
         return

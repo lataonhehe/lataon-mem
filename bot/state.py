@@ -1,11 +1,11 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 from enum import Enum
 
 
 class UserMode(Enum):
     IDLE = "idle"
-    DEEP_DIVE = "deep_dive"  # đang trong luồng hỏi đáp Socratic
+    AWAITING_REPLY = "awaiting_reply"  # vừa hỏi Socratic, chờ trả lời
 
 
 @dataclass
@@ -13,7 +13,7 @@ class UserState:
     mode: UserMode = UserMode.IDLE
     last_note_id: Optional[int] = None
     last_note_content: Optional[str] = None
-    deep_dive_turns: int = 0
+    last_category: Optional[str] = None
 
 
 _states: dict[int, UserState] = {}
@@ -29,10 +29,11 @@ def set_mode(user_id: int, mode: UserMode):
     get_state(user_id).mode = mode
 
 
-def set_last_note(user_id: int, note_id: int, content: str):
+def set_last_note(user_id: int, note_id: int, content: str, category: str):
     s = get_state(user_id)
     s.last_note_id = note_id
     s.last_note_content = content
+    s.last_category = category
 
 
 def reset(user_id: int):

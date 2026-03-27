@@ -1,10 +1,10 @@
 import logging
+import asyncpg
 from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters
 from config.settings import TELEGRAM_TOKEN
-from db.database import init_db
+from db.database import get_pool, init_db
 from bot.handlers import handle_message
 from bot.commands import cmd_help, cmd_list, cmd_search
-import asyncio
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -12,11 +12,26 @@ logging.basicConfig(
 )
 
 
+async def on_startup(app):
+    pool = await get_pool()
+    await init_db(pool)
+    app.bot_data["pool"] = pool
+    logging.info("Database kết nối thành công.")
+
+
+async def on_shutdown(app):
+    pool = app.bot_data.get("pool")
+    if pool:
+        await pool.close()
+        logging.info("Database pool đã đóng.")
+
+
 def main():
     app = (
         ApplicationBuilder()
         .token(TELEGRAM_TOKEN)
-        .post_init(lambda _: init_db())
+        .post_init(on_startup)
+        .post_shutdown(on_shutdown)
         .build()
     )
 
