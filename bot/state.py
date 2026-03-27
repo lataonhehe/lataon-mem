@@ -2,26 +2,43 @@ from dataclasses import dataclass, field
 from typing import Optional, Any
 from enum import Enum
 
+SOCRATIC_MAX_TURNS = 3
+
 
 class UserMode(Enum):
     IDLE = "idle"
-    AWAITING_REPLY = "awaiting_reply"
-    DEEP_DIVE = "deep_dive"
-    QUIZ = "quiz"
+    SOCRATIC = "socratic"  # sau khi lưu ghi chú, đào sâu tự động
+    DEEP_DIVE = "deep_dive"  # /deep topic, đào sâu chủ đề tự do
+    QUIZ = "quiz"  # đang trả lời quiz
+    CONFLICT = "conflict"  # ghi chú mới trong lúc đang Socratic/Deep
 
 
 @dataclass
 class UserState:
     mode: UserMode = UserMode.IDLE
+
+    # ghi chú vừa lưu (dùng cho Socratic)
     last_note_id: Optional[int] = None
     last_note_content: Optional[str] = None
     last_category: Optional[str] = None
-    # deep dive
+
+    # Socratic
+    socratic_turns: int = 0
+    socratic_history: list = field(default_factory=list)
+
+    # Deep dive (/deep)
     deep_topic: Optional[str] = None
     deep_history: list = field(default_factory=list)
     deep_turns: int = 0
-    # quiz
+
+    # Quiz
     quiz_note: Optional[Any] = None
+
+    # Ghi chú nháp (nhắn khi đang Socratic/Deep)
+    pending_note_text: Optional[str] = None
+
+    # Mode trước conflict để resume
+    prev_mode: Optional[UserMode] = None
 
 
 _states: dict[int, UserState] = {}

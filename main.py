@@ -11,6 +11,10 @@ from bot.commands import (
     cmd_search,
     cmd_delete,
     cmd_edit,
+    cmd_done,
+    cmd_skip,
+    cmd_save,
+    cmd_cancel,
     cmd_deep,
     cmd_review,
     cmd_quiz,
@@ -55,6 +59,10 @@ def main():
     app.add_handler(CommandHandler("search", cmd_search))
     app.add_handler(CommandHandler("delete", cmd_delete))
     app.add_handler(CommandHandler("edit", cmd_edit))
+    app.add_handler(CommandHandler("done", cmd_done))
+    app.add_handler(CommandHandler("skip", cmd_skip))
+    app.add_handler(CommandHandler("save", cmd_save))
+    app.add_handler(CommandHandler("cancel", cmd_cancel))
     app.add_handler(CommandHandler("deep", cmd_deep))
     app.add_handler(CommandHandler("review", cmd_review))
     app.add_handler(CommandHandler("quiz", cmd_quiz))

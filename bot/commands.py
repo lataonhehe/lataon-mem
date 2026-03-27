@@ -12,9 +12,24 @@ from db.queries import (
     update_note,
     get_random_note,
     get_stats,
+    save_note,
 )
-from ai.socratic import deep_dive_topic, generate_quiz, generate_summary
-from bot.state import get_state, set_mode, UserMode
+from db.models import Note
+from ai.classifier import classify_note
+from ai.socratic import (
+    generate_quiz,
+    generate_summary,
+    generate_first_question,
+    start_deep_dive,
+)
+from bot.state import (
+    get_state,
+    set_mode,
+    set_last_note,
+    reset,
+    UserMode,
+    SOCRATIC_MAX_TURNS,
+)
 
 VALID_CATEGORIES = [
     "it",
@@ -26,6 +41,8 @@ VALID_CATEGORIES = [
     "finance",
     "other",
 ]
+MAX_SUMMARY_LEN = 120
+DEEP_MAX_TURNS = 5
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -35,20 +52,22 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "*Quản lý ghi chú*\n"
         "  /list — 5 ghi chú gần nhất\n"
         "  /today — ghi chú hôm nay\n"
-        "  /cat [category] — lọc theo loại\n"
-        "  /search [từ khóa] — tìm kiếm\n"
-        "  /delete [id] — xóa ghi chú\n"
-        "  /edit [id] [nội dung] — sửa ghi chú\n\n"
+        "  /cat \\[category\\] — lọc theo loại\n"
+        "  /search \\[từ khóa\\] — tìm kiếm\n"
+        "  /delete \\[id\\] — xóa ghi chú\n"
+        "  /edit \\[id\\] \\[nội dung\\] — sửa ghi chú\n\n"
         "*Đào sâu & ôn tập*\n"
-        "  /deep [chủ đề] — Socratic 5 lượt\n"
+        "  /deep \\[chủ đề\\] — Socratic 5 lượt\n"
         "  /review — ôn 1 ghi chú ngẫu nhiên\n"
-        "  /quiz — kiểm tra kiến thức\n\n"
+        "  /quiz — kiểm tra kiến thức\n"
+        "  /done — kết thúc luồng đang chạy\n"
+        "  /skip — bỏ qua đào sâu hiện tại\n\n"
         "*Thống kê*\n"
         "  /stats — tổng quan học tập\n"
         "  /summary — tóm tắt hôm nay\n"
         "  /export — xuất file Markdown\n"
     )
-    await update.message.reply_text(text, parse_mode="Markdown")
+    await update.message.reply_text(text, parse_mode="MarkdownV2")
 
 
 async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -125,11 +144,8 @@ async def cmd_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not note:
         await update.message.reply_text(f"Không tìm thấy ghi chú #{note_id}.")
         return
-    deleted = await delete_note(pool, update.effective_user.id, note_id)
-    if deleted:
-        await update.message.reply_text(f"Đã xóa ghi chú #{note_id}.")
-    else:
-        await update.message.reply_text("Xóa thất bại, thử lại.")
+    await delete_note(pool, update.effective_user.id, note_id)
+    await update.message.reply_text(f"Đã xóa ghi chú #{note_id}.")
 
 
 async def cmd_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -143,11 +159,147 @@ async def cmd_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not note:
         await update.message.reply_text(f"Không tìm thấy ghi chú #{note_id}.")
         return
-    updated = await update_note(pool, update.effective_user.id, note_id, new_content)
-    if updated:
-        await update.message.reply_text(f"Đã cập nhật ghi chú #{note_id}.")
+    await update_note(pool, update.effective_user.id, note_id, new_content)
+    await update.message.reply_text(f"Đã cập nhật ghi chú #{note_id}.")
+
+
+async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Kết thúc luồng đang chạy, lưu ghi chú nháp nếu có."""
+    user_id = update.effective_user.id
+    pool = context.bot_data["pool"]
+    state = get_state(user_id)
+
+    if state.mode == UserMode.IDLE:
+        await update.message.reply_text("Không có luồng nào đang chạy.")
+        return
+
+    pending = state.pending_note_text
+    reset(user_id)
+
+    if pending:
+        await update.message.chat.send_action("typing")
+        classification = await classify_note(pending)
+        category = classification.get("category", "other")
+        tags = classification.get("tags", [])
+        summary = classification.get("summary", pending[:MAX_SUMMARY_LEN])
+        note = Note(
+            content=pending,
+            category=category,
+            tags=tags,
+            summary=summary,
+            user_id=user_id,
+        )
+        note_id = await save_note(pool, note)
+        tags_display = " ".join(f"#{t}" for t in tags) if tags else ""
+        await update.message.reply_text(
+            f"✅ Kết thúc luồng.\n\nĐã lưu ghi chú nháp:\n`#{note_id}` [{category}] {tags_display}\n_{summary}_",
+            parse_mode="Markdown",
+        )
     else:
-        await update.message.reply_text("Cập nhật thất bại, thử lại.")
+        await update.message.reply_text(
+            "✅ Kết thúc luồng. Nhắn ghi chú tiếp theo nhé!"
+        )
+
+
+async def cmd_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Bỏ qua đào sâu, lưu ghi chú nháp ngay và về IDLE."""
+    user_id = update.effective_user.id
+    pool = context.bot_data["pool"]
+    state = get_state(user_id)
+
+    if state.mode not in (UserMode.SOCRATIC, UserMode.DEEP_DIVE, UserMode.CONFLICT):
+        await update.message.reply_text("Không có luồng nào đang chạy.")
+        return
+
+    pending = state.pending_note_text
+    reset(user_id)
+
+    if pending:
+        await update.message.chat.send_action("typing")
+        classification = await classify_note(pending)
+        category = classification.get("category", "other")
+        tags = classification.get("tags", [])
+        summary = classification.get("summary", pending[:MAX_SUMMARY_LEN])
+        note = Note(
+            content=pending,
+            category=category,
+            tags=tags,
+            summary=summary,
+            user_id=user_id,
+        )
+        note_id = await save_note(pool, note)
+        tags_display = " ".join(f"#{t}" for t in tags) if tags else ""
+        await update.message.reply_text(
+            f"Đã lưu `#{note_id}` [{category}] {tags_display}\n_{summary}_",
+            parse_mode="Markdown",
+        )
+    else:
+        await update.message.reply_text("Đã bỏ qua đào sâu.")
+
+
+async def cmd_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Lưu nháp và tiếp tục luồng đào sâu."""
+    user_id = update.effective_user.id
+    pool = context.bot_data["pool"]
+    state = get_state(user_id)
+
+    if state.mode != UserMode.CONFLICT or not state.pending_note_text:
+        await update.message.reply_text("Không có ghi chú nháp nào.")
+        return
+
+    pending = state.pending_note_text
+    prev_mode = state.prev_mode or UserMode.IDLE
+
+    await update.message.chat.send_action("typing")
+    classification = await classify_note(pending)
+    category = classification.get("category", "other")
+    tags = classification.get("tags", [])
+    summary = classification.get("summary", pending[:MAX_SUMMARY_LEN])
+    note = Note(
+        content=pending, category=category, tags=tags, summary=summary, user_id=user_id
+    )
+    note_id = await save_note(pool, note)
+    tags_display = " ".join(f"#{t}" for t in tags) if tags else ""
+
+    state.pending_note_text = None
+    state.mode = prev_mode
+
+    # Gửi confirm + resume câu hỏi cũ
+    last_question = ""
+    if prev_mode == UserMode.SOCRATIC and state.socratic_history:
+        last_question = state.socratic_history[-1].get("content", "")
+    elif prev_mode == UserMode.DEEP_DIVE and state.deep_history:
+        last_question = state.deep_history[-1].get("content", "")
+
+    msg = f"📌 Đã lưu nháp `#{note_id}` [{category}] {tags_display}\n_{summary}_"
+    if last_question:
+        msg += f"\n\nTiếp tục đào sâu:\n🤔 {last_question}"
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+
+async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Hủy ghi chú nháp, tiếp tục luồng đào sâu."""
+    user_id = update.effective_user.id
+    state = get_state(user_id)
+
+    if state.mode != UserMode.CONFLICT:
+        await update.message.reply_text("Không có gì để hủy.")
+        return
+
+    prev_mode = state.prev_mode or UserMode.IDLE
+    state.pending_note_text = None
+    state.mode = prev_mode
+
+    last_question = ""
+    if prev_mode == UserMode.SOCRATIC and state.socratic_history:
+        last_question = state.socratic_history[-1].get("content", "")
+    elif prev_mode == UserMode.DEEP_DIVE and state.deep_history:
+        last_question = state.deep_history[-1].get("content", "")
+
+    msg = "Đã hủy ghi chú nháp."
+    if last_question:
+        msg += f"\n\nTiếp tục đào sâu:\n🤔 {last_question}"
+    await update.message.reply_text(msg)
 
 
 async def cmd_deep(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -160,12 +312,12 @@ async def cmd_deep(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state.deep_topic = topic
     state.deep_history = []
     state.deep_turns = 0
-    question = await deep_dive_topic(topic, turn=1, history=[])
+    question = await start_deep_dive(topic)
     state.deep_history.append({"role": "assistant", "content": question})
-    state.deep_turns = 1
     set_mode(user_id, UserMode.DEEP_DIVE)
     await update.message.reply_text(
-        f"🔍 *Deep dive: {topic}*\n\n🤔 {question}", parse_mode="Markdown"
+        f"🔍 *Deep dive: {topic}*\n\n🤔 {question}\n\n_(1/{DEEP_MAX_TURNS} lượt · /done để kết thúc)_",
+        parse_mode="Markdown",
     )
 
 
@@ -177,12 +329,10 @@ async def cmd_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     date_str = note.created_at.strftime("%d/%m/%Y") if note.created_at else ""
     tags = f" #{' #'.join(note.tags)}" if note.tags else ""
-    text = (
-        f"📖 *Ôn lại ghi chú #{note.id}* ({date_str})\n"
-        f"[{note.category}]{tags}\n\n"
-        f"{note.content}"
+    await update.message.reply_text(
+        f"📖 *Ôn lại #{note.id}* ({date_str})\n[{note.category}]{tags}\n\n{note.content}",
+        parse_mode="Markdown",
     )
-    await update.message.reply_text(text, parse_mode="Markdown")
 
 
 async def cmd_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -197,7 +347,8 @@ async def cmd_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     question = await generate_quiz(note.content, note.category)
     set_mode(user_id, UserMode.QUIZ)
     await update.message.reply_text(
-        f"🧠 *Quiz [{note.category}]*\n\n{question}", parse_mode="Markdown"
+        f"🧠 *Quiz [{note.category}]*\n\n{question}",
+        parse_mode="Markdown",
     )
 
 
@@ -208,14 +359,14 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "\n".join(f"  {cat}: {count}" for cat, count in stats["by_category"].items())
         or "  (chưa có)"
     )
-    text = (
-        f"📊 *Thống kê của bạn*\n\n"
+    await update.message.reply_text(
+        f"📊 *Thống kê*\n\n"
         f"Tổng ghi chú: {stats['total']}\n"
         f"Hôm nay: {stats['today']}\n"
         f"Streak: {stats['streak']} ngày\n\n"
-        f"*Theo category:*\n{cat_lines}"
+        f"*Theo category:*\n{cat_lines}",
+        parse_mode="Markdown",
     )
-    await update.message.reply_text(text, parse_mode="Markdown")
 
 
 async def cmd_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -252,5 +403,5 @@ async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"### #{n.id} — {date_str}{tags}\n{n.content}\n")
     content = "\n".join(lines)
     file = io.BytesIO(content.encode("utf-8"))
-    file.name = f"knowledge_{datetime.now().strftime('%Y%m%d')}.md"
-    await update.message.reply_document(document=file, filename=file.name)
+    filename = f"knowledge_{datetime.now().strftime('%Y%m%d')}.md"
+    await update.message.reply_document(document=file, filename=filename)
