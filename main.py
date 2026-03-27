@@ -21,6 +21,7 @@ from bot.commands import (
     cmd_stats,
     cmd_summary,
     cmd_export,
+    cmd_recall,
 )
 
 logging.basicConfig(
@@ -63,6 +64,7 @@ def main():
     app.add_handler(CommandHandler("skip", cmd_skip))
     app.add_handler(CommandHandler("save", cmd_save))
     app.add_handler(CommandHandler("cancel", cmd_cancel))
+    app.add_handler(CommandHandler("recall", cmd_recall))
     app.add_handler(CommandHandler("deep", cmd_deep))
     app.add_handler(CommandHandler("review", cmd_review))
     app.add_handler(CommandHandler("quiz", cmd_quiz))

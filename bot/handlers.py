@@ -9,6 +9,7 @@ from ai.socratic import (
     continue_socratic,
     continue_deep_dive,
 )
+from db.vector_store import upsert_note, delete_note as vector_delete
 from bot.state import (
     get_state,
     set_last_note,
@@ -30,11 +31,8 @@ CONFLICT_MSG = (
 )
 
 
-async def _save_note_flow(
-    pool, user_id: int, text: str
-) -> tuple[int, str, str, str, str]:
-    """Phân loại và lưu ghi chú. Trả về (note_id, category, tags_display, summary, confirm_text)."""
-    classification = await classify_note(text)
+async def _save_and_embed(pool, user_id: int, text: str, classification: dict) -> tuple:
+    """Lưu vào Postgres + upsert embedding vào ChromaDB."""
     category = classification.get("category", "other")
     tags = classification.get("tags", [])
     summary = classification.get("summary", text[:MAX_SUMMARY_LEN])
@@ -45,9 +43,22 @@ async def _save_note_flow(
         content=text, category=category, tags=tags, summary=summary, user_id=user_id
     )
     note_id = await save_note(pool, note)
+
+    # Upsert embedding (chạy trong executor vì sync)
+    import asyncio
+
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(
+        None,
+        upsert_note,
+        note_id,
+        text,
+        {"user_id": user_id, "category": category, "tags": ",".join(tags)},
+    )
+
     tags_display = " ".join(f"#{t}" for t in tags) if tags else ""
     confirm = f"Đã lưu `#{note_id}` [{category}] {tags_display}\n_{summary}_"
-    return note_id, category, tags_display, summary, confirm
+    return note_id, category, summary, confirm
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -58,7 +69,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.chat.send_action("typing")
 
-    # ── QUIZ mode ──────────────────────────────────────────────
+    # ── QUIZ ──────────────────────────────────────────
     if state.mode == UserMode.QUIZ:
         await update.message.reply_text(
             f"💡 Ghi nhận rồi!\n\nNội dung gốc:\n_{state.quiz_note.summary}_",
@@ -67,16 +78,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reset(user_id)
         return
 
-    # ── CONFLICT mode (chờ /save /skip /done) ──────────────────
+    # ── CONFLICT ──────────────────────────────────────
     if state.mode == UserMode.CONFLICT:
         await update.message.reply_text(
-            "Vui lòng chọn:\n/save · /skip · /done\nhoặc /cancel để hủy.",
+            "Vui lòng chọn:\n/save · /skip · /done · /cancel"
         )
         return
 
-    # ── SOCRATIC mode ───────────────────────────────────────────
+    # ── SOCRATIC ──────────────────────────────────────
     if state.mode == UserMode.SOCRATIC:
-        # Phát hiện ghi chú mới (dài hơn 20 ký tự và không giống câu trả lời ngắn)
         if len(text) > 20 and not _looks_like_answer(text, state):
             state.pending_note_text = text
             state.prev_mode = UserMode.SOCRATIC
@@ -84,7 +94,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(CONFLICT_MSG)
             return
 
-        # Tiếp tục Socratic
         state.socratic_history.append({"role": "user", "content": text})
         state.socratic_turns += 1
 
@@ -97,12 +106,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         question = await continue_socratic(state.socratic_history, text)
         state.socratic_history.append({"role": "assistant", "content": question})
-        turns_left = SOCRATIC_MAX_TURNS - state.socratic_turns
         suffix = f"\n\n_({state.socratic_turns}/{SOCRATIC_MAX_TURNS} lượt · /done để kết thúc)_"
         await update.message.reply_text(f"🤔 {question}{suffix}", parse_mode="Markdown")
         return
 
-    # ── DEEP DIVE mode ──────────────────────────────────────────
+    # ── DEEP DIVE ─────────────────────────────────────
     if state.mode == UserMode.DEEP_DIVE:
         if len(text) > 20 and not _looks_like_answer(text, state):
             state.pending_note_text = text
@@ -116,7 +124,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if state.deep_turns >= DEEP_MAX_TURNS:
             await update.message.reply_text(
-                f"✅ Đã đào sâu {DEEP_MAX_TURNS} lượt về *{state.deep_topic}*. Ghi lại những gì bạn khám phá nhé!",
+                f"✅ Đã đào sâu {DEEP_MAX_TURNS} lượt về *{state.deep_topic}*.",
                 parse_mode="Markdown",
             )
             reset(user_id)
@@ -128,8 +136,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"🤔 {question}{suffix}", parse_mode="Markdown")
         return
 
-    # ── IDLE: ghi chú mới ───────────────────────────────────────
-    note_id, category, _, _, confirm = await _save_note_flow(pool, user_id, text)
+    # ── IDLE: ghi chú mới ─────────────────────────────
+    classification = await classify_note(text)
+    note_id, category, _, confirm = await _save_and_embed(
+        pool, user_id, text, classification
+    )
     set_last_note(user_id, note_id, text, category)
     await update.message.reply_text(confirm, parse_mode="Markdown")
 
@@ -142,12 +153,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def _looks_like_answer(text: str, state) -> bool:
-    """Heuristic: tin nhắn ngắn hoặc liên quan đến topic đang đào sâu → coi là câu trả lời."""
     if len(text) <= 60:
         return True
     topic = state.last_note_content or state.deep_topic or ""
-    # Nếu chia sẻ từ chung với topic đang đào sâu → coi là reply
     topic_words = set(topic.lower().split())
     text_words = set(text.lower().split())
-    overlap = topic_words & text_words
-    return len(overlap) >= 2
+    return len(topic_words & text_words) >= 2

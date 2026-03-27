@@ -22,6 +22,8 @@ from ai.socratic import (
     generate_first_question,
     start_deep_dive,
 )
+from ai.embedder import embed_text
+from db.vector_store import query_similar, delete_note as vector_delete
 from bot.state import (
     get_state,
     set_mode,
@@ -145,6 +147,10 @@ async def cmd_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Không tìm thấy ghi chú #{note_id}.")
         return
     await delete_note(pool, update.effective_user.id, note_id)
+    import asyncio
+
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, vector_delete, note_id)
     await update.message.reply_text(f"Đã xóa ghi chú #{note_id}.")
 
 
@@ -300,6 +306,43 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if last_question:
         msg += f"\n\nTiếp tục đào sâu:\n🤔 {last_question}"
     await update.message.reply_text(msg)
+
+
+async def cmd_recall(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Tìm kiếm ngữ nghĩa bằng embedding."""
+    pool = context.bot_data["pool"]
+    user_id = update.effective_user.id
+    query = " ".join(context.args)
+    if not query:
+        await update.message.reply_text("Dùng: /recall [chủ đề hoặc câu hỏi]")
+        return
+
+    await update.message.chat.send_action("typing")
+    import asyncio
+
+    loop = asyncio.get_event_loop()
+    query_embedding = await embed_text(query)
+    results = await loop.run_in_executor(
+        None, query_similar, query_embedding, user_id, 5
+    )
+
+    if not results:
+        await update.message.reply_text(
+            "Chưa tìm thấy ghi chú nào liên quan.\n"
+            "Lưu ý: /recall dùng semantic search, cần có ghi chú đã được lưu."
+        )
+        return
+
+    lines = [f"🔍 Top {len(results)} ghi chú liên quan đến *{query}*:\n"]
+    for r in results:
+        score = round((1 - r["distance"]) * 100)
+        cat = r["metadata"].get("category", "?")
+        preview = r["content"][:120].replace("\n", " ")
+        if len(r["content"]) > 120:
+            preview += "…"
+        lines.append(f"`#{r['note_id']}` [{cat}] _{score}% match_\n{preview}")
+
+    await update.message.reply_text("\n\n".join(lines), parse_mode="Markdown")
 
 
 async def cmd_deep(update: Update, context: ContextTypes.DEFAULT_TYPE):
