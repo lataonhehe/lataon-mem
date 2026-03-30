@@ -1,6 +1,7 @@
 import io
 from datetime import datetime
 from telegram import Update
+from telegram.helpers import escape_markdown
 from telegram.ext import ContextTypes
 from db.queries import (
     get_recent_notes, get_today_notes, get_notes_by_category,
@@ -61,8 +62,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  /summary — tóm tắt hôm nay\n"
         "  /export — xuất file Markdown\n"
     )
-    await update.message.reply_text(text, parse_mode="MarkdownV2")
-
+    escaped_text = escape_markdown(text, version=2)
+    await update.message.reply_text(escaped_text, parse_mode="MarkdownV2")
 
 async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pool = context.bot_data["pool"]
