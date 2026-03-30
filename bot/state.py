@@ -7,17 +7,18 @@ SOCRATIC_MAX_TURNS = 3
 
 class UserMode(Enum):
     IDLE = "idle"
-    SOCRATIC = "socratic"  # sau khi lưu ghi chú, đào sâu tự động
-    DEEP_DIVE = "deep_dive"  # /deep topic, đào sâu chủ đề tự do
-    QUIZ = "quiz"  # đang trả lời quiz
-    CONFLICT = "conflict"  # ghi chú mới trong lúc đang Socratic/Deep
+    SOCRATIC = "socratic"
+    DEEP_DIVE = "deep_dive"
+    QUIZ = "quiz"
+    CONFLICT = "conflict"
 
 
 @dataclass
 class UserState:
     mode: UserMode = UserMode.IDLE
+    socratic_enabled: bool = True   # user có thể tắt Socratic
 
-    # ghi chú vừa lưu (dùng cho Socratic)
+    # ghi chú vừa lưu
     last_note_id: Optional[int] = None
     last_note_content: Optional[str] = None
     last_category: Optional[str] = None
@@ -26,7 +27,7 @@ class UserState:
     socratic_turns: int = 0
     socratic_history: list = field(default_factory=list)
 
-    # Deep dive (/deep)
+    # Deep dive
     deep_topic: Optional[str] = None
     deep_history: list = field(default_factory=list)
     deep_turns: int = 0
@@ -34,10 +35,8 @@ class UserState:
     # Quiz
     quiz_note: Optional[Any] = None
 
-    # Ghi chú nháp (nhắn khi đang Socratic/Deep)
+    # Nháp khi conflict
     pending_note_text: Optional[str] = None
-
-    # Mode trước conflict để resume
     prev_mode: Optional[UserMode] = None
 
 
@@ -62,4 +61,6 @@ def set_last_note(user_id: int, note_id: int, content: str, category: str):
 
 
 def reset(user_id: int):
-    _states[user_id] = UserState()
+    s = get_state(user_id)
+    enabled = s.socratic_enabled   # giữ lại preference
+    _states[user_id] = UserState(socratic_enabled=enabled)

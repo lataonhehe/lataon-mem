@@ -3,49 +3,40 @@ from datetime import datetime
 from telegram import Update
 from telegram.ext import ContextTypes
 from db.queries import (
-    get_recent_notes,
-    get_today_notes,
-    get_notes_by_category,
-    search_notes,
-    get_note_by_id,
-    delete_note,
-    update_note,
-    get_random_note,
-    get_stats,
-    save_note,
+    get_recent_notes, get_today_notes, get_notes_by_category,
+    search_notes, get_note_by_id, delete_note, update_note,
+    get_random_note, get_stats, save_note,
 )
 from db.models import Note
 from ai.classifier import classify_note
-from ai.socratic import (
-    generate_quiz,
-    generate_summary,
-    generate_first_question,
-    start_deep_dive,
-)
+from ai.socratic import generate_quiz, generate_summary, generate_first_question, start_deep_dive
 from ai.embedder import embed_text
 from db.vector_store import query_similar, delete_note as vector_delete
-from bot.state import (
-    get_state,
-    set_mode,
-    set_last_note,
-    reset,
-    UserMode,
-    SOCRATIC_MAX_TURNS,
-)
+from bot.state import get_state, set_mode, set_last_note, reset, UserMode, SOCRATIC_MAX_TURNS
 
-VALID_CATEGORIES = [
-    "it",
-    "knowledge",
-    "diary",
-    "book",
-    "idea",
-    "health",
-    "finance",
-    "other",
-]
+VALID_CATEGORIES = ["it", "knowledge", "diary", "book", "idea", "health", "finance", "other"]
 MAX_SUMMARY_LEN = 120
 DEEP_MAX_TURNS = 5
 
+
+
+async def cmd_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Bật/tắt Socratic tự động sau khi lưu ghi chú."""
+    user_id = update.effective_user.id
+    state = get_state(user_id)
+
+    if context.args and context.args[0].lower() in ("on", "off"):
+        state.socratic_enabled = context.args[0].lower() == "on"
+    else:
+        # Toggle nếu không có arg
+        state.socratic_enabled = not state.socratic_enabled
+
+    status = "✅ bật" if state.socratic_enabled else "⏸ tắt"
+    await update.message.reply_text(
+        f"Socratic tự động: *{status}*\n\n"
+        f"{'Sau mỗi ghi chú mình sẽ hỏi đào sâu.' if state.socratic_enabled else 'Mình sẽ chỉ lưu ghi chú, không hỏi thêm. Dùng /deep để đào sâu thủ công.'}",
+        parse_mode="Markdown",
+    )
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
@@ -63,6 +54,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  /review — ôn 1 ghi chú ngẫu nhiên\n"
         "  /quiz — kiểm tra kiến thức\n"
         "  /done — kết thúc luồng đang chạy\n"
+        "  /mode — bật/tắt Socratic tự động\n"
         "  /skip — bỏ qua đào sâu hiện tại\n\n"
         "*Thống kê*\n"
         "  /stats — tổng quan học tập\n"
@@ -106,9 +98,7 @@ async def cmd_cat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     category = context.args[0].lower()
     if category not in VALID_CATEGORIES:
-        await update.message.reply_text(
-            f"Category không hợp lệ. Chọn: {', '.join(VALID_CATEGORIES)}"
-        )
+        await update.message.reply_text(f"Category không hợp lệ. Chọn: {', '.join(VALID_CATEGORIES)}")
         return
     notes = await get_notes_by_category(pool, update.effective_user.id, category)
     if not notes:
@@ -148,7 +138,6 @@ async def cmd_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await delete_note(pool, update.effective_user.id, note_id)
     import asyncio
-
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, vector_delete, note_id)
     await update.message.reply_text(f"Đã xóa ghi chú #{note_id}.")
@@ -188,13 +177,7 @@ async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
         category = classification.get("category", "other")
         tags = classification.get("tags", [])
         summary = classification.get("summary", pending[:MAX_SUMMARY_LEN])
-        note = Note(
-            content=pending,
-            category=category,
-            tags=tags,
-            summary=summary,
-            user_id=user_id,
-        )
+        note = Note(content=pending, category=category, tags=tags, summary=summary, user_id=user_id)
         note_id = await save_note(pool, note)
         tags_display = " ".join(f"#{t}" for t in tags) if tags else ""
         await update.message.reply_text(
@@ -202,9 +185,7 @@ async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown",
         )
     else:
-        await update.message.reply_text(
-            "✅ Kết thúc luồng. Nhắn ghi chú tiếp theo nhé!"
-        )
+        await update.message.reply_text("✅ Kết thúc luồng. Nhắn ghi chú tiếp theo nhé!")
 
 
 async def cmd_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -226,13 +207,7 @@ async def cmd_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
         category = classification.get("category", "other")
         tags = classification.get("tags", [])
         summary = classification.get("summary", pending[:MAX_SUMMARY_LEN])
-        note = Note(
-            content=pending,
-            category=category,
-            tags=tags,
-            summary=summary,
-            user_id=user_id,
-        )
+        note = Note(content=pending, category=category, tags=tags, summary=summary, user_id=user_id)
         note_id = await save_note(pool, note)
         tags_display = " ".join(f"#{t}" for t in tags) if tags else ""
         await update.message.reply_text(
@@ -261,9 +236,7 @@ async def cmd_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
     category = classification.get("category", "other")
     tags = classification.get("tags", [])
     summary = classification.get("summary", pending[:MAX_SUMMARY_LEN])
-    note = Note(
-        content=pending, category=category, tags=tags, summary=summary, user_id=user_id
-    )
+    note = Note(content=pending, category=category, tags=tags, summary=summary, user_id=user_id)
     note_id = await save_note(pool, note)
     tags_display = " ".join(f"#{t}" for t in tags) if tags else ""
 
@@ -308,6 +281,7 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg)
 
 
+
 async def cmd_recall(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Tìm kiếm ngữ nghĩa bằng embedding."""
     pool = context.bot_data["pool"]
@@ -319,7 +293,6 @@ async def cmd_recall(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.chat.send_action("typing")
     import asyncio
-
     loop = asyncio.get_event_loop()
     query_embedding = await embed_text(query)
     results = await loop.run_in_executor(
@@ -344,6 +317,31 @@ async def cmd_recall(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("\n\n".join(lines), parse_mode="Markdown")
 
+
+async def cmd_soc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Bật Socratic mode."""
+    user_id = update.effective_user.id
+    state = get_state(user_id)
+    state.socratic_enabled = True
+    await update.message.reply_text(
+        "✅ Socratic bật — bot sẽ hỏi đào sâu sau mỗi ghi chú."
+    )
+
+
+async def cmd_nosoc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Tắt Socratic mode."""
+    user_id = update.effective_user.id
+    state = get_state(user_id)
+    state.socratic_enabled = False
+    # Nếu đang trong luồng Socratic thì reset luôn
+    if state.mode == UserMode.SOCRATIC:
+        from bot.state import reset
+        reset(user_id)
+        state = get_state(user_id)
+        state.socratic_enabled = False
+    await update.message.reply_text(
+        "🔕 Socratic tắt — bot chỉ lưu ghi chú, không hỏi thêm. Dùng /soc để bật lại."
+    )
 
 async def cmd_deep(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -398,10 +396,7 @@ async def cmd_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pool = context.bot_data["pool"]
     stats = await get_stats(pool, update.effective_user.id)
-    cat_lines = (
-        "\n".join(f"  {cat}: {count}" for cat, count in stats["by_category"].items())
-        or "  (chưa có)"
-    )
+    cat_lines = "\n".join(f"  {cat}: {count}" for cat, count in stats["by_category"].items()) or "  (chưa có)"
     await update.message.reply_text(
         f"📊 *Thống kê*\n\n"
         f"Tổng ghi chú: {stats['total']}\n"
@@ -433,9 +428,7 @@ async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not notes:
         await update.message.reply_text("Chưa có ghi chú nào để xuất.")
         return
-    lines = [
-        f"# Knowledge Base\n\nXuất lúc: {datetime.now().strftime('%d/%m/%Y %H:%M')}\n"
-    ]
+    lines = [f"# Knowledge Base\n\nXuất lúc: {datetime.now().strftime('%d/%m/%Y %H:%M')}\n"]
     current_cat = None
     for n in sorted(notes, key=lambda x: x.category):
         if n.category != current_cat:
