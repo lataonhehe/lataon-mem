@@ -1,0 +1,33 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "lataon-mem-bot",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "observability": { "enabled": true },
+
+  // Thay bằng subdomain thật trên zone Cloudflare của bạn
+  "routes": [{ "pattern": "bot.example.com", "custom_domain": true }],
+
+  "vars": {
+    "MODEL": "anthropic/claude-sonnet-4.5"
+  },
+
+  "ai": { "binding": "AI" },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "lataon-mem-bot",
+      // Lấy từ output của `wrangler d1 create lataon-mem-bot`
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  "vectorize": [{ "binding": "VECTORS", "index_name": "lataon-mem-notes" }],
+
+  "durable_objects": {
+    "bindings": [{ "name": "USER_SESSION", "class_name": "UserSession" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["UserSession"] }]
+}
